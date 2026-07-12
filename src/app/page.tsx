@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { useSession, signIn, signOut } from "next-auth/react";
 
 type CalendarEvent = {
@@ -27,7 +27,6 @@ function useTodayEvents(enabled: boolean) {
   useEffect(() => {
     if (!enabled) return;
     let cancelled = false;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: kicks off a loading state for the fetch below
     setLoading(true);
     fetch("/api/calendar/events")
       .then(async (res) => {
@@ -54,13 +53,25 @@ function useTodayEvents(enabled: boolean) {
 function useClock() {
   const [now, setNow] = useState<Date | null>(null);
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: avoids server/client hydration mismatch for the clock
     setNow(new Date());
     const id = setInterval(() => setNow(new Date()), 1000 * 30);
     return () => clearInterval(id);
   }, []);
   return now;
 }
+
+function extractPhotoUrl(item: unknown): string | null {
+  if (typeof item === "string") return item;
+  if (item && typeof item === "object") {
+    const obj = item as Record<string, unknown>;
+    const candidate = obj.dataUrl ?? obj.url ?? obj.src;
+    if (typeof candidate === "string") return candidate;
+  }
+  return null;
+}
+
+const INACTIVITY_MS = 3 * 60 * 1000;
+const SLIDE_INTERVAL_MS = 8000;
 
 export default function Home() {
   const now = useClock();
@@ -74,6 +85,74 @@ export default function Home() {
       text: "Hi! Ask me what's happening today, or tell me to add something to the calendar.",
     },
   ]);
+
+  const [photos, setPhotos] = useState<string[]>([]);
+  const [photosLoading, setPhotosLoading] = useState(false);
+  const [photosError, setPhotosError] = useState<string | null>(null);
+  const [showSlideshow, setShowSlideshow] = useState(false);
+  const [slideIndex, setSlideIndex] = useState(0);
+  const inactivityTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const loadPhotos = useCallback(() => {
+    setPhotosLoading(true);
+    setPhotosError(null);
+    fetch("/api/photos")
+      .then(async (res) => {
+        if (!res.ok) throw new Error((await res.json()).error ?? "Failed to load photos");
+        return res.json();
+      })
+      .then((data) => {
+        const raw = data.photos ?? data.images ?? [];
+        const urls = (raw as unknown[])
+          .map(extractPhotoUrl)
+          .filter((u): u is string => Boolean(u));
+        setPhotos(urls);
+      })
+      .catch((err) => {
+        setPhotosError(err.message);
+      })
+      .finally(() => {
+        setPhotosLoading(false);
+      });
+  }, []);
+
+  const openSlideshow = useCallback(() => {
+    setSlideIndex(0);
+    setShowSlideshow(true);
+    if (photos.length === 0) loadPhotos();
+  }, [photos.length, loadPhotos]);
+
+  const closeSlideshow = useCallback(() => {
+    setShowSlideshow(false);
+  }, []);
+
+  useEffect(() => {
+    if (!showSlideshow || photos.length === 0) return;
+    const id = setInterval(() => {
+      setSlideIndex((i) => (i + 1) % photos.length);
+    }, SLIDE_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [showSlideshow, photos.length]);
+
+  useEffect(() => {
+    if (!isSignedIn) return;
+
+    function resetTimer() {
+      if (inactivityTimer.current) clearTimeout(inactivityTimer.current);
+      inactivityTimer.current = setTimeout(() => {
+        openSlideshow();
+      }, INACTIVITY_MS);
+    }
+
+    const events = ["mousemove", "mousedown", "touchstart", "keydown", "scroll"];
+    events.forEach((ev) => window.addEventListener(ev, resetTimer));
+    resetTimer();
+
+    return () => {
+      events.forEach((ev) => window.removeEventListener(ev, resetTimer));
+      if (inactivityTimer.current) clearTimeout(inactivityTimer.current);
+    };
+  }, [isSignedIn, openSlideshow]);
 
   const dateLabel = now
     ? now.toLocaleDateString("en-US", {
@@ -102,7 +181,6 @@ export default function Home() {
 
   return (
     <main className="flex-1 flex flex-col gap-5 p-5 sm:p-8 max-w-5xl w-full mx-auto">
-      {/* Top bar: date, time, weather */}
       <header className="flex items-center justify-between gap-4 rounded-3xl bg-paper border border-line px-6 py-5 sm:px-8 sm:py-6">
         <div>
           <p className="font-body text-ink-soft text-sm sm:text-base uppercase tracking-[0.15em]">
@@ -122,6 +200,14 @@ export default function Home() {
               <p className="text-ink-soft text-xs sm:text-sm">Miami · Sunny</p>
             </div>
           </div>
+          {isSignedIn && (
+            <button
+              onClick={openSlideshow}
+              className="rounded-2xl bg-oat px-4 py-3 text-ink-soft text-sm font-semibold"
+            >
+              📷 Photos
+            </button>
+          )}
           {isSignedIn ? (
             <button
               onClick={() => signOut()}
@@ -140,7 +226,6 @@ export default function Home() {
         </div>
       </header>
 
-      {/* Today's events */}
       <section className="rounded-3xl bg-paper border border-line p-6 flex flex-col gap-4">
         <h2 className="font-display text-2xl text-ink">📅 Today</h2>
         {!isSignedIn ? (
@@ -174,7 +259,6 @@ export default function Home() {
         )}
       </section>
 
-      {/* Shopping list */}
       <section className="rounded-3xl bg-paper border border-line px-6 py-5 sm:px-8">
         <h2 className="font-display text-xl text-ink mb-3">🛒 Shopping list</h2>
         <p className="text-ink-soft text-sm">
@@ -182,7 +266,6 @@ export default function Home() {
         </p>
       </section>
 
-      {/* Chat assistant */}
       <section className="rounded-3xl bg-teal-deep px-6 py-5 sm:px-8 sm:py-6 flex flex-col gap-4 flex-1 min-h-[220px]">
         <h2 className="font-display text-xl text-paper">💬 Family Assistant</h2>
         <div className="flex-1 flex flex-col gap-2 overflow-y-auto">
@@ -221,6 +304,29 @@ export default function Home() {
           </button>
         </form>
       </section>
+
+      {showSlideshow && (
+        <div
+          onClick={closeSlideshow}
+          className="fixed inset-0 z-50 bg-black flex items-center justify-center cursor-pointer"
+        >
+          {photosLoading ? (
+            <p className="text-paper text-lg">Loading photos…</p>
+          ) : photosError ? (
+            <p className="text-paper text-lg px-8 text-center">
+              Couldn&apos;t load photos: {photosError}
+            </p>
+          ) : photos.length === 0 ? (
+            <p className="text-paper text-lg">No photos found yet.</p>
+          ) : (
+            <img
+              src={photos[slideIndex]}
+              alt="Family photo"
+              className="max-w-full max-h-full object-contain"
+            />
+          )}
+        </div>
+      )}
     </main>
   );
 }
