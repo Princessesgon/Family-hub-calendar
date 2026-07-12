@@ -1,31 +1,55 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useSession, signIn, signOut } from "next-auth/react";
 
-type Member = {
-  name: string;
-  color: string;
-  emoji: string;
-  events: { time: string; title: string }[];
+type CalendarEvent = {
+  id: string;
+  title: string;
+  start: string | null;
+  allDay: boolean;
 };
 
-const FAMILY: Member[] = [
-  {
-    name: "Sofía",
-    color: "var(--coral)",
-    emoji: "👧",
-    events: [
-      { time: "5:30 PM", title: "Ballet" },
-      { time: "7:15 PM", title: "Dentist" },
-    ],
-  },
-  {
-    name: "Emma",
-    color: "var(--violet)",
-    emoji: "🧒",
-    events: [{ time: "6:00 PM", title: "Soccer practice" }],
-  },
-];
+function formatEventTime(iso: string | null, allDay: boolean) {
+  if (!iso) return "";
+  if (allDay) return "All day";
+  return new Date(iso).toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function useTodayEvents(enabled: boolean) {
+  const [events, setEvents] = useState<CalendarEvent[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!enabled) return;
+    let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: kicks off a loading state for the fetch below
+    setLoading(true);
+    fetch("/api/calendar/events")
+      .then(async (res) => {
+        if (!res.ok) throw new Error((await res.json()).error ?? "Failed to load");
+        return res.json();
+      })
+      .then((data) => {
+        if (!cancelled) setEvents(data.events ?? []);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err.message);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled]);
+
+  return { events, loading, error };
+}
 
 function useClock() {
   const [now, setNow] = useState<Date | null>(null);
@@ -40,6 +64,9 @@ function useClock() {
 
 export default function Home() {
   const now = useClock();
+  const { data: session, status } = useSession();
+  const isSignedIn = status === "authenticated" && !session?.error;
+  const { events, loading, error } = useTodayEvents(isSignedIn);
   const [chatInput, setChatInput] = useState("");
   const [messages, setMessages] = useState<{ from: "user" | "hub"; text: string }[]>([
     {
@@ -85,58 +112,66 @@ export default function Home() {
             {timeLabel || "\u00A0"}
           </p>
         </div>
-        <div className="flex items-center gap-3 rounded-2xl bg-oat px-5 py-3">
-          <span className="text-3xl sm:text-4xl" aria-hidden>
-            ☀️
-          </span>
-          <div className="text-right">
-            <p className="font-display text-2xl sm:text-3xl text-ink leading-none">78°</p>
-            <p className="text-ink-soft text-xs sm:text-sm">Miami · Sunny</p>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 rounded-2xl bg-oat px-5 py-3">
+            <span className="text-3xl sm:text-4xl" aria-hidden>
+              ☀️
+            </span>
+            <div className="text-right">
+              <p className="font-display text-2xl sm:text-3xl text-ink leading-none">78°</p>
+              <p className="text-ink-soft text-xs sm:text-sm">Miami · Sunny</p>
+            </div>
           </div>
+          {isSignedIn ? (
+            <button
+              onClick={() => signOut()}
+              className="rounded-2xl bg-oat px-4 py-3 text-ink-soft text-sm font-semibold"
+            >
+              Sign out
+            </button>
+          ) : (
+            <button
+              onClick={() => signIn("google")}
+              className="rounded-2xl bg-teal text-paper px-5 py-3 text-sm font-semibold"
+            >
+              Sign in with Google
+            </button>
+          )}
         </div>
       </header>
 
-      {/* Family members + today's events */}
-      <section className="grid grid-cols-1 sm:grid-cols-2 gap-5">
-        {FAMILY.map((member) => (
-          <div
-            key={member.name}
-            className="rounded-3xl bg-paper border border-line p-6 flex flex-col gap-4"
-          >
-            <div className="flex items-center gap-3">
-              <span
-                className="w-12 h-12 rounded-full flex items-center justify-center text-2xl"
-                style={{ backgroundColor: `color-mix(in srgb, ${member.color} 18%, white)` }}
-                aria-hidden
+      {/* Today's events */}
+      <section className="rounded-3xl bg-paper border border-line p-6 flex flex-col gap-4">
+        <h2 className="font-display text-2xl text-ink">📅 Today</h2>
+        {!isSignedIn ? (
+          <p className="text-ink-soft text-sm">
+            Sign in with Google above to show today&apos;s real events here.
+          </p>
+        ) : loading ? (
+          <p className="text-ink-soft text-sm">Loading events…</p>
+        ) : error ? (
+          <p className="text-coral text-sm">Couldn&apos;t load events: {error}</p>
+        ) : events.length === 0 ? (
+          <p className="text-ink-soft text-sm">Nothing scheduled today. 🎉</p>
+        ) : (
+          <div className="flex flex-col gap-2">
+            {events.map((ev) => (
+              <div
+                key={ev.id}
+                className="flex items-center gap-3 rounded-xl bg-oat px-4 py-3"
               >
-                {member.emoji}
-              </span>
-              <h2 className="font-display text-2xl text-ink">{member.name}</h2>
-            </div>
-            <div className="flex flex-col gap-2">
-              {member.events.length === 0 ? (
-                <p className="text-ink-soft text-sm">Nothing scheduled today.</p>
-              ) : (
-                member.events.map((ev, i) => (
-                  <div
-                    key={i}
-                    className="flex items-center gap-3 rounded-xl bg-oat px-4 py-3"
-                  >
-                    <span
-                      className="w-1.5 h-6 rounded-full shrink-0"
-                      style={{ backgroundColor: member.color }}
-                      aria-hidden
-                    />
-                    <span className="font-semibold text-ink text-sm sm:text-base w-20 shrink-0">
-                      {ev.time}
-                    </span>
-                    <span className="text-ink text-sm sm:text-base">{ev.title}</span>
-                  </div>
-                ))
-              )}
-            </div>
+                <span
+                  className="w-1.5 h-6 rounded-full shrink-0 bg-teal"
+                  aria-hidden
+                />
+                <span className="font-semibold text-ink text-sm sm:text-base w-24 shrink-0">
+                  {formatEventTime(ev.start, ev.allDay)}
+                </span>
+                <span className="text-ink text-sm sm:text-base">{ev.title}</span>
+              </div>
+            ))}
           </div>
-        ))}
+        )}
       </section>
 
       {/* Shopping list */}
