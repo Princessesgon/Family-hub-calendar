@@ -33,3 +33,11 @@ body {
   color: var(--ink);
   font-family: var(--font-body), Arial, Helvetica, sans-serif;
 }
+@keyframes fadein {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
